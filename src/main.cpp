@@ -12,11 +12,13 @@ enum MOTOR {
 AsyncStream<100> serial(&Serial, '\n');  // указали Stream-объект и символ конца
 void engine_handler(const int &speed, MOTOR motor);
 void speed_conversion();
-void parsing(char* buf);
+bool parsing_NRF();
+void parsing_COM(char* buf);
 int scaleToRange(int value, int start_val);
 void scaleSpeeds(int &speedR, int &speedL);
 void rotation(int &speedR, int &speedL);
 void radioSetup();
+int speed_to_pwm(double &speed);
 boolean oppositeDir(boolean state);
 
 //      MOTORS
@@ -89,8 +91,8 @@ void loop()
     return;
   }
 
-  engine_handler(speedR, MOTOR::MOTOR_1);       //проверить направление (правое/левое колесо)
-  engine_handler(speedL, MOTOR::MOTOR_2);
+  engine_handler(speedL, MOTOR::MOTOR_1);       //проверить направление (правое/левое колесо)
+  engine_handler(speedR, MOTOR::MOTOR_2);
 
   speedR = 0;
   speedL = 0;
@@ -180,8 +182,8 @@ void parsing_COM(char* buf)
     return;
   }
 
-  double speedR_as_speed = ((double)(dutyX + dutyY * L / 2.0) / 100.0);   // / 100.0;     //100 - константа, на которую умножалось значение скорости на Jetson
-  double speedL_as_speed = ((double)(dutyX - dutyY * L / 2.0) / 100.0);   // / 100.0;
+  double speedR_as_speed = ((double)((double)dutyX * 0.75 + dutyY * L / 2.0) / 100.0);   // / 100.0;     //100 - константа, на которую умножалось значение скорости на Jetson
+  double speedL_as_speed = ((double)((double)dutyX * 0.75 - dutyY * L / 2.0) / 100.0);   // / 100.0;
 
   speedR = speed_to_pwm(speedR_as_speed);
   speedL = speed_to_pwm(speedL_as_speed);
@@ -201,7 +203,7 @@ void parsing_COM(char* buf)
 int speed_to_pwm(double &speed)
 {
   int pwm_max, pwm_min;
-  double vel_max = 1.26, vel_min = 0.0;
+  double vel_max = 0.26, vel_min = 0.0;   //vel_max = 0.5
 
   if (speed > 0)
   {
