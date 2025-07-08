@@ -3,32 +3,33 @@
 #include "SoftwareSerial.h"
 #include "nRF24L01.h"
 #include "RF24.h"
+#include "math.h"
 
-enum MOTOR {
+enum MOTOR
+{
   MOTOR_1,
   MOTOR_2
 };
 
-AsyncStream<100> serial(&Serial, '\n');  // указали Stream-объект и символ конца
+AsyncStream<100> serial(&Serial, '\n'); // указали Stream-объект и символ конца
 void engine_handler(const int &speed, MOTOR motor);
 void speed_conversion();
 bool parsing_NRF();
-void parsing_COM(char* buf);
+void parsing_COM(char *buf);
 int scaleToRange(int value, int start_val);
 void scaleSpeeds(int &speedR, int &speedL);
 void rotation(int &speedR, int &speedL);
 void radioSetup();
-int speed_to_pwm(double &speed);
+int velocity_to_pwm(int vel);
 boolean oppositeDir(boolean state);
 
 //      MOTORS
 #define SPEED_M1_PIN 3
 #define DIR_M1_PIN 8
-#define EN_M1_PIN 3  //LOW - включен
+#define EN_M1_PIN 3 // LOW - включен
 #define SPEED_M2_PIN 6
 #define DIR_M2_PIN 7
 #define EN_M2_PIN 4
-
 
 boolean doneParsing, startParsing;
 int start_coordX = 500, start_coordY = 510;
@@ -44,19 +45,17 @@ String string_convert;
 #define R 0.085
 #define L 0.52
 
+RF24 radio(9, 10); // "создать" модуль на пинах 9 и 10 Для Уно
 
-RF24 radio(9, 10);  // "создать" модуль на пинах 9 и 10 Для Уно
-
-byte address[][6] = {"1Node", "2Node", "3Node", "4Node", "5Node", "6Node"};     //возможные номера труб
+byte address[][6] = {"1Node", "2Node", "3Node", "4Node", "5Node", "6Node"}; // возможные номера труб
 
 int coord[2];
 
-
 void setup()
 {
-  Serial.begin(115200);   //connection with Jetson
+  Serial.begin(115200); // connection with Jetson
 
-  radioSetup();           //connection with NRF
+  radioSetup(); // connection with NRF
 
   pinMode(SPEED_M1_PIN, OUTPUT);
   pinMode(DIR_M1_PIN, OUTPUT);
@@ -75,7 +74,7 @@ void loop()
 {
   bool exist_NRF = parsing_NRF();
 
-  if (exist_NRF == 0)               //нет сигнала с NRF
+  if (exist_NRF == 0) // нет сигнала с NRF
   {
     if (serial.available())
     {
@@ -91,11 +90,12 @@ void loop()
     return;
   }
 
-  engine_handler(speedL, MOTOR::MOTOR_1);       //проверить направление (правое/левое колесо)
+  engine_handler(speedL, MOTOR::MOTOR_1); // проверить направление (правое/левое колесо)
   engine_handler(speedR, MOTOR::MOTOR_2);
-
-  speedR = 0;
-  speedL = 0;
+  /*
+    speedR = 0;
+    speedL = 0;
+  */
 }
 
 void engine_handler(const int &speed, MOTOR motor)
@@ -106,13 +106,13 @@ void engine_handler(const int &speed, MOTOR motor)
   uint8_t en_pin;
   uint8_t speed_pin;
   uint8_t dir_pin;
-  if (motor == MOTOR::MOTOR_1) 
+  if (motor == MOTOR::MOTOR_1)
   {
     en_pin = EN_M1_PIN;
     speed_pin = SPEED_M1_PIN;
     dir_pin = DIR_M1_PIN;
-  } 
-  else if (motor == MOTOR::MOTOR_2) 
+  }
+  else if (motor == MOTOR::MOTOR_2)
   {
     en_pin = EN_M2_PIN;
     speed_pin = SPEED_M2_PIN;
@@ -125,10 +125,10 @@ void engine_handler(const int &speed, MOTOR motor)
   }
   else if (speed > 0)
   {
-    digitalWrite(dir_pin, HIGH);        //проверить направление (правое/левое колесо)
+    digitalWrite(dir_pin, HIGH); // проверить направление (правое/левое колесо)
     analogWrite(speed_pin, speed);
   }
-  else 
+  else
   {
     digitalWrite(dir_pin, LOW);
     analogWrite(speed_pin, -speed);
@@ -140,87 +140,196 @@ void engine_handler(const int &speed, MOTOR motor)
 2. Пересчитываем в скорости правого и левого колеса
 3. При выходе за границы максимально допустимых значений скорости пропорционально масштабируем их
 */
-void parsing_COM(char* buf)
+void parsing_COM(char *buf)
 {
   int i = 0;
   int dutyX, dutyY;
+
   while (buf[i])
   {
     char incomingChar = buf[i];
     if (startParsing)
     {
-      if (incomingChar == ' ')  // принят пакет speed
+      if (incomingChar == ' ') // принят пакет speed
       {
-        dutyX = string_convert.toInt();  // конвертируем принятый пакет в переменную
-        string_convert = "";          // очищаем переменную пакета
-      } 
-      else if (incomingChar == ';')  // принят пакет dir
+        dutyX = string_convert.toInt(); // конвертируем принятый пакет в переменную
+        string_convert = "";            // очищаем переменную пакета
+      }
+      else if (incomingChar == ';') // принят пакет dir
       {
-        dutyY = string_convert.toInt();  // конвертируем принятый пакет в переменную
-        string_convert = "";             // очищаем переменную пакета
-        startParsing = false;            // закончить принятие пакетов
-        doneParsing = true;              // парсинг окончен, можно переходить к движению
-      } 
-      else 
+        dutyY = string_convert.toInt(); // конвертируем принятый пакет в переменную
+        string_convert = "";            // очищаем переменную пакета
+        startParsing = false;           // закончить принятие пакетов
+        doneParsing = true;             // парсинг окончен, можно переходить к движению
+      }
+      else
       {
-        string_convert += incomingChar;  // записываем  принятые данные в переменную
+        string_convert += incomingChar; // записываем  принятые данные в переменную
       }
     }
 
-    if (incomingChar == '$')  // начало парсинга
+    if (incomingChar == '$') // начало парсинга
     {
-      startParsing = true;  // начать принятие пакетов
+      startParsing = true; // начать принятие пакетов
     }
     i++;
   }
 
-  if (dutyX <= 5 && dutyX >= -5 && dutyY <= 5 && dutyY >= -5)
-  {
-    speedR = 0;
-    speedL = 0;
+  /*
+  нужно написать алгоритм, который будет при отправке с Jetson значений скорости
+  (скорость находится в окрестности нулевой скорости) плавно(???) выставлять
+  ШИМ на конкретном колесе равный 145 (мб 150) и аналогичная задача для торможения
 
-    return;
-  }
+  плавность мб реализована заданием константы TIME_ACCELERATION = 1 секунда
+  (соотв 5-7 обновлением информации о препятствиях)
 
-  double speedR_as_speed = ((double)((double)dutyX * 0.75 + dutyY * L / 2.0) / 100.0);   // / 100.0;     //100 - константа, на которую умножалось значение скорости на Jetson
-  double speedL_as_speed = ((double)((double)dutyX * 0.75 - dutyY * L / 2.0) / 100.0);   // / 100.0;
+  возможно нужно распределить по условиям движение вперед-назад и вправо-влево
+  */
 
-  speedR = speed_to_pwm(speedR_as_speed);
-  speedL = speed_to_pwm(speedL_as_speed);
+  double velR = ((double)((double)dutyX * 0.75 + dutyY * L / 2.0) / 100.0); // / 100.0;     //100 - константа, на которую умножалось значение скорости на Jetson
+  double velL = ((double)((double)dutyX * 0.75 - dutyY * L / 2.0) / 100.0); // / 100.0;
 
-/*
-  speedR_before_conv = (dutyX + dutyY * L / 2) * 35 / 100 + 160;
-  speedL_before_conv = (dutyX - dutyY * L / 2) * 35 / 100 + 160;
-*/
-
-/*
-  speedR = dutyX + ((float)dutyY * L) / 2;
-  speedL = dutyY - ((float)dutyY * L) / 2;
-*/
-  //scaleSpeeds(speedR, speedL);
+  speedR = velocity_to_pwm(velR, rightWheel);
+  speedL = velocity_to_pwm(velL, leftWheel);
 }
 
-int speed_to_pwm(double &speed)
+struct WheelState
 {
-  int pwm_max, pwm_min;
-  double vel_max = 0.26, vel_min = 0.0;   //vel_max = 0.5
+  int speed = 0;
+  unsigned long startTime = 0;
+  bool isAccelerating = false;
+  bool isHighPwm = false;
+  bool isBraking = false;
+  unsigned long brakeStartTime = 0;
+  int startAccelSpeed = 0;
+};
 
-  if (speed > 0)
+WheelState rightWheel;
+WheelState leftWheel;
+
+const int DELTA = 5;
+const int HYSTERESIS = 2;                     // Ширина зоны гистерезиса
+const int DIRECTION_HYSTERESIS = 10;          // Гистерезис направления
+const unsigned long TIME_ACCELERATION = 1000; // 1 секунда в миллисекундах
+const unsigned long TIME_HIGH_PWM = 500;      // 0.5 секунды в миллисекундах
+const int MAX_PWM = 155;
+const int MID_PWM = 145;
+
+/**
+ * @brief преобразование скорости вращения колес в ШИМ;
+ *        если значение vel находится в DELTA окрестности нуля, тогда соответствующее значение speed равно 0
+ *        при получении значения vel не в DELTA окрестности нуля,
+ *        будет плавно (в течении TIME_ACCELERATION) изменяться значение speed (ШИМ на соответствующее колесо) от 0 до MAX_PWM
+ *        и такое значение speed будет держаться время TIME_HIGH_PWM
+ *        после значение speed будет равно MID_PWM
+ *
+ * @param vel линейная скорость вращения колеса в диапазоне [-100, 100]
+ * @return int значение ШИМ для соответствующего колеса
+ */
+int velocity_to_pwm(int vel, WheelState &state)
+{
+  bool newDirection = (vel >= 0);
+
+  // Сброс состояния при смене направления
+  // Гистерезис направления - смена только при превышении порога
+  if ((newDirection && state.speed < -DIRECTION_HYSTERESIS) ||
+      (!newDirection && state.speed > DIRECTION_HYSTERESIS))
   {
-    pwm_min = 145;
-    pwm_max = 155;
+    state.isBraking = true;
+    state.brakeStartTime = millis();
+    state.startAccelSpeed = abs(state.speed);
+    state.isAccelerating = false;
+    state.isHighPwm = false;
   }
-  else if (speed < 0)
+
+  if (abs(vel) > DELTA + HYSTERESIS)
   {
-    pwm_min = -165;
-    pwm_max = -175;
+    // Если мотор остановлен ИЛИ сейчас тормозит — начинаем/продолжаем разгон
+    if ((!state.isAccelerating && !state.isHighPwm) || (state.isBraking && abs(vel) > 3 * DELTA))
+    {
+      // Начинаем разгон
+      state.startTime = millis();
+      state.isAccelerating = true;
+      state.isBraking = false; // Отменяем торможение, если оно было
+      state.isHighPwm = false;
+      state.startAccelSpeed = abs(state.speed);
+    }
+  }
+  else if (abs(vel) < DELTA - HYSTERESIS)
+  {
+    // Если vel в окрестности нуля и мотор работал (speed > 0), начинаем торможение
+    if ((state.speed > 3 * DELTA || state.isHighPwm || state.isAccelerating) && !state.isBraking)
+    {
+      state.brakeStartTime = millis();
+      state.isBraking = true;
+      state.isAccelerating = false;
+      state.isHighPwm = false;
+      state.startAccelSpeed = abs(state.speed);
+    }
   }
 
-  int pwm_speed = ((max(pwm_max, pwm_min) - min(pwm_max, pwm_min)) / (vel_max - vel_min)) * speed + pwm_min;
+  if (state.isAccelerating)
+  {
+    unsigned long currentTime = millis();
+    unsigned long elapsedTime = currentTime - state.startTime;
 
-  return pwm_speed;
+    if (elapsedTime <= TIME_ACCELERATION)
+    {
+      // Плавный разгон от 0 до MAX_PWM
+      state.speed = map(elapsedTime, 0, TIME_ACCELERATION, state.startAccelSpeed, MAX_PWM);
+      state.speed = constrain(state.speed, 0, MAX_PWM);
+    }
+    else if (elapsedTime <= TIME_ACCELERATION + TIME_HIGH_PWM)
+    {
+      // Удерживаем MAX_PWM
+      state.speed = MAX_PWM;
+      state.isHighPwm = true;
+    }
+    else
+    {
+      // Переходим на MID_PWM (145)
+      state.speed = MID_PWM;
+      state.isAccelerating = false;
+      state.isHighPwm = false;
+    }
+  }
+  else if (state.isBraking)
+  {
+    unsigned long currentTime = millis();
+    unsigned long elapsedBrakeTime = currentTime - state.brakeStartTime;
+
+    if (elapsedBrakeTime <= TIME_ACCELERATION)
+    {
+      // Плавное торможение от текущего значения (или MID_PWM) до 0
+      state.speed = map(elapsedBrakeTime, 0, TIME_ACCELERATION, state.startAccelSpeed, 0); // корректно ли последовательность аргументов
+      state.speed = constrain(state.speed, 0, MAX_PWM);
+    }
+    else
+    {
+      // Торможение завершено
+      state.speed = 0;
+      state.isBraking = false;
+    }
+  }
+
+  // Применяем направление с учетом гистерезиса
+  if (abs(state.speed) < DIRECTION_HYSTERESIS)
+  {
+    // В зоне гистерезиса направления сохраняем текущее состояние
+    return state.speed;
+  }
+  else
+  {
+    if (newDirection)
+    {
+      return state.speed;
+    }
+    else
+    {
+      return -state.speed;
+    }
+  }
 }
-
 
 /*
 1. Получаем пакет состоящий из двух значений (координата по Ох; координата по Оу) в диапазоне [0; 1023]
@@ -234,8 +343,8 @@ bool parsing_NRF()
   byte pipeNo;
   int coordX, coordY;
 
-  if (radio.available(&pipeNo))          // слушаем эфир со всех труб
-  {   
+  if (radio.available(&pipeNo)) // слушаем эфир со всех труб
+  {
     exist_parsing = 1;
 
     radio.read(&coord, sizeof(coord));
@@ -251,10 +360,9 @@ bool parsing_NRF()
 
     scaleSpeeds(speedR, speedL);
 
-    //speed_conversion();
+    // speed_conversion();
 
-    //rotation(speedR, speedL);       //опционально
-  
+    // rotation(speedR, speedL);       //опционально
   }
 
   return exist_parsing;
@@ -268,7 +376,7 @@ void rotation(int &speedR, int &speedL)
   {
     rotation_flag = 1;
     time_start_rotation = millis();
-    
+
     speedR = 160;
     speedL = -160;
   }
@@ -276,7 +384,7 @@ void rotation(int &speedR, int &speedL)
   {
     rotation_flag = 1;
     time_start_rotation = millis();
-    
+
     speedL = 160;
     speedR = -160;
   }
@@ -308,7 +416,8 @@ void scaleSpeeds(int &speedR, int &speedL)
   int minSpeed = min(speedR, speedL);
 
   // Если максимальное значение выходит за пределы диапазона
-  if (maxSpeed > MAX_SPEED_FORW) {
+  if (maxSpeed > MAX_SPEED_FORW)
+  {
     // Коэффициент масштабирования
     float scaleFactor = MAX_SPEED_FORW / (float)maxSpeed;
 
@@ -316,8 +425,9 @@ void scaleSpeeds(int &speedR, int &speedL)
     speedR = speedR * scaleFactor;
     speedL = speedL * scaleFactor;
   }
-  
-  if (minSpeed < MAX_SPEED_BACK) {
+
+  if (minSpeed < MAX_SPEED_BACK)
+  {
     // Коэффициент масштабирования
     float scaleFactor = MAX_SPEED_BACK / (float)minSpeed;
 
@@ -329,19 +439,19 @@ void scaleSpeeds(int &speedR, int &speedL)
 
 void radioSetup()
 {
-  radio.begin();              // активировать модуль
-  radio.setAutoAck(1);        // режим подтверждения приёма, 1 вкл 0 выкл
-  radio.setRetries(0, 15);    // (время между попыткой достучаться, число попыток)
-  radio.enableAckPayload();   // разрешить отсылку данных в ответ на входящий сигнал
-  radio.setPayloadSize(32);   // размер пакета, в байтах
+  radio.begin();            // активировать модуль
+  radio.setAutoAck(1);      // режим подтверждения приёма, 1 вкл 0 выкл
+  radio.setRetries(0, 15);  // (время между попыткой достучаться, число попыток)
+  radio.enableAckPayload(); // разрешить отсылку данных в ответ на входящий сигнал
+  radio.setPayloadSize(32); // размер пакета, в байтах
 
-  radio.openReadingPipe(1, address[0]);   // хотим слушать трубу 0
-  radio.setChannel(0x60);     // выбираем канал (в котором нет шумов!)
+  radio.openReadingPipe(1, address[0]); // хотим слушать трубу 0
+  radio.setChannel(0x60);               // выбираем канал (в котором нет шумов!)
 
-  radio.setPALevel (RF24_PA_MAX);   // уровень мощности передатчика. На выбор RF24_PA_MIN, RF24_PA_LOW, RF24_PA_HIGH, RF24_PA_MAX
-  radio.setDataRate (RF24_2MBPS); // скорость обмена. На выбор RF24_2MBPS, RF24_1MBPS, RF24_250KBPS
-  //должна быть одинакова на приёмнике и передатчике!
-  //при самой низкой скорости имеем самую высокую чувствительность и дальность!!
+  radio.setPALevel(RF24_PA_MAX); // уровень мощности передатчика. На выбор RF24_PA_MIN, RF24_PA_LOW, RF24_PA_HIGH, RF24_PA_MAX
+  radio.setDataRate(RF24_2MBPS); // скорость обмена. На выбор RF24_2MBPS, RF24_1MBPS, RF24_250KBPS
+  // должна быть одинакова на приёмнике и передатчике!
+  // при самой низкой скорости имеем самую высокую чувствительность и дальность!!
 
   radio.powerUp();        // начать работу
   radio.startListening(); // начинаем слушать эфир, мы приёмный модуль
