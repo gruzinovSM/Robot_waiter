@@ -11,6 +11,20 @@ enum MOTOR
   MOTOR_2
 };
 
+struct WheelState
+{
+  int speed = 0;
+  unsigned long startTime = 0;
+  bool isAccelerating = false;
+  bool isHighPwm = false;
+  bool isBraking = false;
+  unsigned long brakeStartTime = 0;
+  int startAccelSpeed = 0;
+};
+
+WheelState rightWheel;
+WheelState leftWheel;
+
 AsyncStream<100> serial(&Serial, '\n'); // указали Stream-объект и символ конца
 void engine_handler(const int &speed, MOTOR motor);
 void speed_conversion();
@@ -20,7 +34,7 @@ int scaleToRange(int value, int start_val);
 void scaleSpeeds(int &speedR, int &speedL);
 void rotation(int &speedR, int &speedL);
 void radioSetup();
-int velocity_to_pwm(int vel);
+int velocity_to_pwm(int vel, WheelState &state);
 boolean oppositeDir(boolean state);
 
 //      MOTORS
@@ -186,34 +200,20 @@ void parsing_COM(char *buf)
   возможно нужно распределить по условиям движение вперед-назад и вправо-влево
   */
 
-  double velR = ((double)((double)dutyX * 0.75 + dutyY * L / 2.0) / 100.0); // / 100.0;     //100 - константа, на которую умножалось значение скорости на Jetson
-  double velL = ((double)((double)dutyX * 0.75 - dutyY * L / 2.0) / 100.0); // / 100.0;
+  int velR = ((dutyX + dutyY * L / 2.0)); // / 100.0;     //100 - константа, на которую умножалось значение скорости на Jetson
+  int velL = ((dutyX - dutyY * L / 2.0)); // / 100.0;
 
   speedR = velocity_to_pwm(velR, rightWheel);
   speedL = velocity_to_pwm(velL, leftWheel);
 }
 
-struct WheelState
-{
-  int speed = 0;
-  unsigned long startTime = 0;
-  bool isAccelerating = false;
-  bool isHighPwm = false;
-  bool isBraking = false;
-  unsigned long brakeStartTime = 0;
-  int startAccelSpeed = 0;
-};
-
-WheelState rightWheel;
-WheelState leftWheel;
-
 const int DELTA = 5;
 const int HYSTERESIS = 2;                     // Ширина зоны гистерезиса
 const int DIRECTION_HYSTERESIS = 10;          // Гистерезис направления
-const unsigned long TIME_ACCELERATION = 1000; // 1 секунда в миллисекундах
+const unsigned long TIME_ACCELERATION = 750;  // 1 секунда в миллисекундах
 const unsigned long TIME_HIGH_PWM = 500;      // 0.5 секунды в миллисекундах
-const int MAX_PWM = 155;
-const int MID_PWM = 145;
+const int MAX_PWM = 160;
+const int MID_PWM = 150;
 
 /**
  * @brief преобразование скорости вращения колес в ШИМ;
