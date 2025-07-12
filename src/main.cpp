@@ -22,6 +22,7 @@ struct WheelState
   int startAccelSpeed = 0;
   int targetPwm = 0; // Целевое значение PWM
   int boostPwm = 0;  // Пиковое значение PWM (targetPwm + DELTA_PWM)
+  int direction = 1;
 };
 
 WheelState rightWheel;
@@ -212,13 +213,13 @@ void parsing_COM(char *buf)
 const int DELTA = 4;
 const int HYSTERESIS = 2;                    // Ширина зоны гистерезиса
 const int DIRECTION_HYSTERESIS = 5;          // Гистерезис направления
-const unsigned long TIME_ACCELERATION = 750; // 1 секунда в миллисекундах
-const unsigned long TIME_HIGH_PWM = 250;     // 0.5 секунды в миллисекундах
-const int MAX_PWM_FWD = 163;  // Максимальный ШИМ вперед
-const int MID_PWM_FWD = 151;  // Рабочий ШИМ вперед
-const int MAX_PWM_REV = 178;  // Максимальный ШИМ назад
-const int MID_PWM_REV = 167;  // Рабочий ШИМ назад
-const int DELTA_PWM = 20; // Превышение над целевой скоростью при разгоне
+const unsigned long TIME_ACCELERATION = 750; // 1 секунда в миллисекундах            при 750 - хорошо
+const unsigned long TIME_HIGH_PWM = 300;     // 0.5 секунды в миллисекундах           при 250 - хорошо
+const int MAX_PWM_FWD = 160;                 // Максимальный ШИМ вперед         
+const int MID_PWM_FWD = 150;                 // Рабочий ШИМ вперед
+const int MAX_PWM_REV = 160;                 // Максимальный ШИМ назад
+const int MID_PWM_REV = 150;                 // Рабочий ШИМ назад
+const int DELTA_PWM = 10;                    // Превышение над целевой скоростью при разгоне
 
 /**
  * @brief преобразование скорости вращения колес в ШИМ;
@@ -239,117 +240,99 @@ int velocity_to_pwm(int vel, WheelState &state)
   int MAX_PWM = isForward ? MAX_PWM_FWD : MAX_PWM_REV;
   int MID_PWM = isForward ? MID_PWM_FWD : MID_PWM_REV;
 
-  // Определение целевых значений PWM
-  if (absVel <= DELTA)
+  // Определяем направление
+  int newDirection = (vel >= 0) ? 1 : -1;
+
+  // Проверяем, изменилось ли направление
+  if (newDirection != state.direction)
   {
-    state.targetPwm = 0;
-    state.boostPwm = 0;
+    // Если направление изменилось, начинаем торможение
+    state.direction = newDirection;
+    state.isAccelerating = false;
+    state.isHighPwm = false;
+    state.isBraking = true;
+    state.startTime = millis();
+  }
+
+  // Проверяем, находится ли vel в окрестности нуля
+  bool isNearZero = (abs(vel) <= DELTA);
+
+  if (!isNearZero)
+  {
+    // Если vel не в окрестности нуля, вычисляем targetPwm и boostPwm
+    state.targetPwm = map(abs(vel), 0, 52, MID_PWM, MAX_PWM);
+    state.boostPwm = state.targetPwm + DELTA_PWM;
+    state.boostPwm = constrain(state.boostPwm, 0, MAX_PWM);
+    // Если не в процессе разгона/торможения, начинаем разгон
+    if (!state.isAccelerating && !state.isBraking && !state.isHighPwm)
+    {
+      state.isAccelerating = true;
+      state.startTime = millis();
+    }
   }
   else
   {
-    state.targetPwm = map(constrain(absVel, 0, 52), 0, 52, MID_PWM, MAX_PWM);
-    state.boostPwm = constrain(state.targetPwm + DELTA_PWM, 0, MAX_PWM);
-  }
-
-  // Сброс состояния при смене направления
-  // Гистерезис направления - смена только при превышении порога
-  if ((isForward && state.speed < -DIRECTION_HYSTERESIS) ||
-      (!isForward && state.speed > DIRECTION_HYSTERESIS))
-  {
-    state.isBraking = true;
-    state.brakeStartTime = millis();
-    state.startAccelSpeed = abs(state.speed);
-    state.isAccelerating = false;
-    state.isHighPwm = false;
-  }
-
-  if (abs(vel) > DELTA + HYSTERESIS)
-  {
-    // Если мотор остановлен ИЛИ сейчас тормозит — начинаем/продолжаем разгон
-    if ((!state.isAccelerating && !state.isHighPwm) || (state.isBraking && abs(vel) > 3 * DELTA))
+    // Если vel в окрестности нуля, начинаем торможение
+    if (!state.isBraking && (state.speed != 0))
     {
-      // Начинаем разгон
-      state.startTime = millis();
-      state.isAccelerating = true;
-      state.isBraking = false; // Отменяем торможение, если оно было
-      state.isHighPwm = false;
-      state.startAccelSpeed = abs(state.speed);
-    }
-  }
-  else if (abs(vel) < DELTA - HYSTERESIS)
-  {
-    // Если vel в окрестности нуля и мотор работал (speed > 0), начинаем торможение
-    if ((state.speed > 3 * DELTA || state.isHighPwm || state.isAccelerating) && !state.isBraking)
-    {
-      state.brakeStartTime = millis();
-      state.isBraking = true;
       state.isAccelerating = false;
       state.isHighPwm = false;
-      state.startAccelSpeed = abs(state.speed);
+      state.isBraking = true;
+      state.startAccelSpeed = state.speed;
+      state.startTime = millis();
     }
   }
+
+  // Вычисляем текущее время
+  unsigned long currentTime = millis();
+  unsigned long elapsedTime = currentTime - state.startTime;
 
   if (state.isAccelerating)
   {
-    unsigned long currentTime = millis();
-    unsigned long elapsedTime = currentTime - state.startTime;
-
-    if (elapsedTime <= TIME_ACCELERATION)
+    // Плавный разгон от 0 до boostPwm
+    if (elapsedTime < TIME_ACCELERATION)
     {
-      // Разгон до boostPwm
-      state.speed = map(elapsedTime, 0, TIME_ACCELERATION, state.startAccelSpeed, state.boostPwm);
-      state.speed = constrain(state.speed, 0, isForward ? MAX_PWM_FWD : MAX_PWM_REV);
-    }
-    else if (elapsedTime <= TIME_ACCELERATION + TIME_HIGH_PWM)
-    {
-      // Удержание boostPwm
-      state.speed = state.boostPwm;
-      state.isHighPwm = true;
+      float progress = (float)elapsedTime / TIME_ACCELERATION;
+      state.speed = (int)(state.boostPwm * progress);
     }
     else
     {
-      // Снижение до targetPwm
-      state.speed = state.targetPwm;
+      state.speed = state.boostPwm;
       state.isAccelerating = false;
+      state.isHighPwm = true;
+      state.startTime = currentTime;
+    }
+  }
+  else if (state.isHighPwm)
+  {
+    // Удержание boostPwm в течение TIME_HIGH_PWM
+    if (elapsedTime >= TIME_HIGH_PWM)
+    {
       state.isHighPwm = false;
+      // После удержания boostPwm переходим к targetPwm
+      state.speed = state.targetPwm;
     }
   }
   else if (state.isBraking)
   {
-    unsigned long currentTime = millis();
-    unsigned long elapsedBrakeTime = currentTime - state.brakeStartTime;
-
-    if (elapsedBrakeTime <= TIME_ACCELERATION)
+    // Плавное торможение от текущего speed до 0
+    if (elapsedTime < TIME_ACCELERATION)
     {
-      // Плавное торможение от текущего значения (или MID_PWM) до 0
-      state.speed = map(elapsedBrakeTime, 0, TIME_ACCELERATION, state.startAccelSpeed, 0); // корректно ли последовательность аргументов
-      state.speed = constrain(state.speed, 0, isForward ? MAX_PWM_FWD : MAX_PWM_REV);
+      float progress = (float)elapsedTime / TIME_ACCELERATION;
+      state.speed = state.startAccelSpeed - (int)(state.startAccelSpeed * progress);
     }
+
     else
     {
-      // Торможение завершено
       state.speed = 0;
       state.isBraking = false;
     }
   }
 
-  // Применяем направление с учетом гистерезиса
-  if (abs(state.speed) < DIRECTION_HYSTERESIS)
-  {
-    // В зоне гистерезиса направления сохраняем текущее состояние
-    return state.speed;
-  }
-  else
-  {
-    if (isForward)
-    {
-      return state.speed;
-    }
-    else
-    {
-      return -state.speed;
-    }
-  }
+  // Применяем направление
+  int outputSpeed = state.speed * state.direction;
+
+  return outputSpeed;
 }
 
 /*
