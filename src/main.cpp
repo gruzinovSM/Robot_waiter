@@ -37,7 +37,7 @@ int scaleToRange(int value, int start_val);
 void scaleSpeeds(int &speedR, int &speedL);
 void rotation(int &speedR, int &speedL);
 void radioSetup();
-int velocity_to_pwm(int vel, WheelState &state);
+int velocity_to_pwm(int vel, WheelState &state, boolean rotation);
 boolean oppositeDir(boolean state);
 
 //      MOTORS
@@ -61,6 +61,19 @@ String string_convert;
 #define MAX_SPEED_BACK -175
 #define R 0.085
 #define L 0.52
+
+const int DELTA = 4;
+const int HYSTERESIS = 2;                    // Ширина зоны гистерезиса
+const int DIRECTION_HYSTERESIS = 5;          // Гистерезис направления
+const unsigned long TIME_ACCELERATION = 750; // 1 секунда в миллисекундах            при 750 - хорошо
+const unsigned long TIME_HIGH_PWM = 300;     // 0.5 секунды в миллисекундах           при 250 - хорошо
+const int MAX_PWM_FWD = 160;                 // Максимальный ШИМ вперед
+const int MID_PWM_FWD = 150;                 // Рабочий ШИМ вперед
+const int MAX_PWM_FWD_ROT = 180;
+const int MID_PWM_FWD_ROT = 167;
+const int MAX_PWM_REV = 160; // Максимальный ШИМ назад
+const int MID_PWM_REV = 150; // Рабочий ШИМ назад
+const int DELTA_PWM = 10;    // Превышение над целевой скоростью при разгоне
 
 RF24 radio(9, 10); // "создать" модуль на пинах 9 и 10 Для Уно
 
@@ -206,20 +219,13 @@ void parsing_COM(char *buf)
   int velR = ((dutyX + dutyY * L / 2.0)); // / 100.0;     //100 - константа, на которую умножалось значение скорости на Jetson
   int velL = ((dutyX - dutyY * L / 2.0)); // / 100.0;
 
-  speedR = velocity_to_pwm(velR, rightWheel);
-  speedL = velocity_to_pwm(velL, leftWheel);
-}
+  // Определение режима (вращение или движение)
+  bool isRotation = (abs(dutyX) < DELTA && abs(dutyY) > 13 * DELTA);
 
-const int DELTA = 4;
-const int HYSTERESIS = 2;                    // Ширина зоны гистерезиса
-const int DIRECTION_HYSTERESIS = 5;          // Гистерезис направления
-const unsigned long TIME_ACCELERATION = 750; // 1 секунда в миллисекундах            при 750 - хорошо
-const unsigned long TIME_HIGH_PWM = 300;     // 0.5 секунды в миллисекундах           при 250 - хорошо
-const int MAX_PWM_FWD = 160;                 // Максимальный ШИМ вперед         
-const int MID_PWM_FWD = 150;                 // Рабочий ШИМ вперед
-const int MAX_PWM_REV = 160;                 // Максимальный ШИМ назад
-const int MID_PWM_REV = 150;                 // Рабочий ШИМ назад
-const int DELTA_PWM = 10;                    // Превышение над целевой скоростью при разгоне
+  // Установка PWM
+  speedR = velocity_to_pwm(velR, rightWheel, isRotation);
+  speedL = velocity_to_pwm(velL, leftWheel, isRotation);
+}
 
 /**
  * @brief преобразование скорости вращения колес в ШИМ;
@@ -232,13 +238,23 @@ const int DELTA_PWM = 10;                    // Превышение над це
  * @param vel линейная скорость вращения колеса в диапазоне [-100, 100]
  * @return int значение ШИМ для соответствующего колеса
  */
-int velocity_to_pwm(int vel, WheelState &state)
+int velocity_to_pwm(int vel, WheelState &state, boolean rotation)
 {
   bool isForward = (vel >= 0);
   int absVel = abs(vel);
 
-  int MAX_PWM = isForward ? MAX_PWM_FWD : MAX_PWM_REV;
-  int MID_PWM = isForward ? MID_PWM_FWD : MID_PWM_REV;
+  int MAX_PWM, MID_PWM;
+
+  if (rotation)
+  {
+    MAX_PWM = isForward ? MAX_PWM_FWD_ROT : MAX_PWM_REV;
+    MID_PWM = isForward ? MID_PWM_FWD_ROT : MID_PWM_REV;
+  }
+  else
+  {
+    MAX_PWM = isForward ? MAX_PWM_FWD : MAX_PWM_REV;
+    MID_PWM = isForward ? MID_PWM_FWD : MID_PWM_REV;
+  }
 
   // Определяем направление
   int newDirection = (vel >= 0) ? 1 : -1;
